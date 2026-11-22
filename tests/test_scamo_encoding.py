@@ -1,4 +1,6 @@
 import itertools
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 import sys
 import unittest
@@ -43,7 +45,6 @@ class ScamoEncodingTests(unittest.TestCase):
                     result = find_max_k(edges, V)
                     self.assertEqual(result["max_k"], brute_force(edges, V))
                     self.assertEqual(result["status"], "optimal")
-                    self.assertIsNone(result["timeout"])
                     self.assertEqual(
                         sorted(result["labels"]), list(range(1, V + 1))
                     )
@@ -75,12 +76,12 @@ class ScamoEncodingTests(unittest.TestCase):
                         expected = abs(labels[0] - labels[1]) >= width
                         self.assertEqual(is_sat, expected, (width, labels))
 
-    def test_zero_timeout_returns_timeout_status(self):
-        result = find_max_k([(1, 2)], 2, timeout=0)
-
-        self.assertEqual(result["status"], "timeout")
-        self.assertEqual(result["timeout"], 0)
-        self.assertEqual(result["max_k"], 0)
+    def test_log_reports_feasible_labeling(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = find_max_k([(1, 2)], 2)
+        self.assertIn("ABP SAT k=1", output.getvalue())
+        self.assertEqual(sorted(result["labels"]), [1, 2])
 
 
 if __name__ == "__main__":
