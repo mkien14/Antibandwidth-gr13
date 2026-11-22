@@ -14,20 +14,15 @@ def main():
     parser.add_argument(
         "instance",
         nargs="?",
-        default="curtis54.mtx.rnd",
+        default="ibm32.mtx.rnd",
         help="Input file under data/hb (default: curtis54.mtx.rnd).",
-    )
-    parser.add_argument(
-        "--time-limit",
-        type=float,
-        default=5,
-        help="Cumulative SAT solving time limit in seconds (default: 5).",
     )
     args = parser.parse_args()
 
     path = root / "data" / "hb" / args.instance
     V, edges = load_graph(path)
-    result = find_max_k(edges, V, time_limit=args.time_limit)
+    # Direct calls have no timeout; use benchmark/ for resource limits.
+    result = find_max_k(edges, V)
 
     print("Instance:", args.instance)
     print("Status:", result["status"])

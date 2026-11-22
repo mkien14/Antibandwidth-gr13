@@ -8,7 +8,7 @@ from graph_io import load_graph
 from cpSAT_encoding import solve_abp_cp_sat
 
 V, edges = load_graph(root / "data" / "hb" / "ibm32.mtx.rnd")
-result = solve_abp_cp_sat(edges, V, time_limit=10)
+result = solve_abp_cp_sat(edges, V)
 
 print("Status:", result["status"])
 print("Antibandwidth:", result["max_k"])

@@ -8,7 +8,7 @@ from graph_io import load_graph
 from cplexMIP_encoding import solve_abp_cplex_mip
 
 V, edges = load_graph(root / "data" / "hb" / "ibm32.mtx.rnd")
-result = solve_abp_cplex_mip(edges, V, time_limit=100)
+result = solve_abp_cplex_mip(edges, V)
 
 print("Status:", result["status"])
 print("Antibandwidth:", result["max_k"])
