@@ -1,133 +1,243 @@
 from time import perf_counter
+
 from pysat.solvers import Solver
-from sat_common import _add_assignment_constraints, varmap
+
+from sat_common import _add_assignment_constraints
 
 
-def _add_clause(solver, clause):
-    solver.add_clause(clause)
-    return 1
+class _CounterPool:
+    """Share SCL prefix/suffix registers by their exact label interval.
+
+    A register for [left, right) is the OR of the assignment variables in
+    that interval. Its definition is emitted once for each non-isolated
+    vertex, even when several block sizes use the same interval.
+    """
+
+    def __init__(self, V, edges, next_var):
+        self.V = V
+        self.vertices = sorted({u - 1 for edge in edges for u in edge})
+        self.vertex_offsets = {u: i for i, u in enumerate(self.vertices)}
+        self.base = next_var
+        # IDs 0..V-1 denote the original one-hot assignment variables.
+        self.intervals = [(i, i + 1) for i in range(V)]
+        self.interval_ids = {}
+        self.definitions = []
+        self.encoded = 0
+
+    @property
+    def next_var(self):
+        return self.base + len(self.definitions) * len(self.vertices)
+
+    def join(self, previous, value):
+        left = min(self.intervals[previous][0], self.intervals[value][0])
+        right = max(self.intervals[previous][1], self.intervals[value][1])
+        interval = (left, right)
+        if interval not in self.interval_ids:
+            self.interval_ids[interval] = len(self.intervals)
+            self.intervals.append(interval)
+            self.definitions.append((previous, value))
+        return self.interval_ids[interval]
+
+    def literal_base(self, register):
+        """Return the base variable ID and whether it is an auxiliary ID.
+
+        Assignment IDs are translated by vertex * V. Auxiliary IDs are
+        translated by the vertex's position in self.vertices. This avoids
+        storing a separate dictionary of all registers for every vertex.
+        """
+        if register < self.V:
+            return register + 1, False
+        return self.base + (register - self.V) * len(self.vertices), True
+
+    def add_definitions(self, solver):
+        if self.encoded == len(self.definitions):
+            return 0
+        recipes = []
+        for index in range(self.encoded, len(self.definitions)):
+            previous, value = self.definitions[index]
+            previous_base, previous_aux = self.literal_base(previous)
+            value_base, value_aux = self.literal_base(value)
+            current_base, _ = self.literal_base(self.V + index)
+            recipes.append((current_base, previous_base, previous_aux,
+                            value_base, value_aux))
+
+        for vertex_offset, u in enumerate(self.vertices):
+            assignment_offset = u * self.V
+            clauses = []
+            for current_base, previous_base, previous_aux, value_base, value_aux in recipes:
+                current = current_base + vertex_offset
+                previous = previous_base + (vertex_offset if previous_aux else assignment_offset)
+                value = value_base + (vertex_offset if value_aux else assignment_offset)
+                # current <-> (previous OR value).
+                clauses.append([-previous, current])
+                clauses.append([-value, current])
+                clauses.append([previous, value, -current])
+            solver.append_formula(clauses)
+
+        self.encoded = len(self.definitions)
+        return 3 * len(recipes) * len(self.vertices)
 
 
-def _build_counter(solver, variables, next_var, at_most_one):
+def _build_counter(pool, variables):
     registers = [variables[0]]
-    clauses = 0
-
-    for i in range(1, len(variables)):
-        current = next_var
-        next_var += 1
-        previous = registers[-1]
-        value = variables[i]
-
-        clauses += _add_clause(solver, [-value, current])
-        clauses += _add_clause(solver, [-previous, current])
-        clauses += _add_clause(solver, [value, previous, -current])
-
-        if at_most_one:
-            clauses += _add_clause(solver, [-value, -previous])
-
-        registers.append(current)
-
-    return registers, next_var, clauses
+    for value in variables[1:]:
+        registers.append(pool.join(registers[-1], value))
+    return registers
 
 
-def _build_scamo_blocks(solver, variables, width, next_var):
-    blocks = [variables[i:i + width] for i in range(0, len(variables), width)]
+def _build_scamo_blocks(pool, width):
+    """Build SCL blocks using persistent prefix/suffix counter definitions.
+
+    The shared assignment constraints already enforce AMO over every
+    vertex's labels, so internal and adjacent-block AMO clauses are redundant.
+    Only the counters needed for the edge windows are constructed here.
+    """
+    blocks = [list(range(i, min(i + width, pool.V)))
+              for i in range(0, pool.V, width)]
     registers = []
-    clauses = 0
-
-    for block_index, block in enumerate(blocks):
-        is_only_block = len(blocks) == 1
-        is_first = block_index == 0
-        is_last = block_index == len(blocks) - 1
-
-        amo_order = list(reversed(block)) if is_first and not is_only_block else list(block)
-        amo_registers, next_var, added = _build_counter(
-            solver, amo_order, next_var, at_most_one=True
-        )
-        clauses += added
-
-        block_info = {"whole": amo_registers[-1], "prefix": {}, "suffix": {}}
-        if is_first and not is_only_block:
-            for size, register in enumerate(amo_registers, start=1):
-                block_info["suffix"][size] = register
-        else:
-            for size, register in enumerate(amo_registers, start=1):
-                block_info["prefix"][size] = register
-
+    for index, block in enumerate(blocks):
+        is_first = index == 0
+        is_last = index == len(blocks) - 1
+        order = list(reversed(block)) if is_first and not is_last else block
+        counter = _build_counter(pool, order)
+        info = {"whole": counter[-1], "prefix": {}, "suffix": {}}
+        direction = "suffix" if is_first and not is_last else "prefix"
+        info[direction] = dict(enumerate(counter, start=1))
         if not is_first and not is_last:
-            reverse_registers = [block[-1]]
-            for i in range(1, len(block)):
-                if i == len(block) - 1:
-                    register = block_info["whole"]
-                else:
-                    register = next_var
-                    next_var += 1
-
-                previous = reverse_registers[-1]
-                value = block[-1 - i]
-                clauses += _add_clause(solver, [-value, register])
-                clauses += _add_clause(solver, [-previous, register])
-                clauses += _add_clause(solver, [value, previous, -register])
-                reverse_registers.append(register)
-
-            for size, register in enumerate(reverse_registers, start=1):
-                block_info["suffix"][size] = register
-
-        registers.append(block_info)
-
-    for i in range(len(blocks) - 1):
-        right_size = min(width - 1, len(blocks[i + 1]))
-        for right_part_size in range(1, right_size + 1):
-            left_part_size = width - right_part_size
-            left_register = registers[i]["suffix"][left_part_size]
-            right_register = registers[i + 1]["prefix"][right_part_size]
-            clauses += _add_clause(solver, [-left_register, -right_register])
-
-    return registers, next_var, clauses
+            reverse_counter = _build_counter(pool, list(reversed(block)))
+            info["suffix"] = dict(enumerate(reverse_counter, start=1))
+        registers.append(info)
+    return registers
 
 
-def _window_registers(registers, start, width):
-    block_index, offset = divmod(start, width)
+def _window_registers(registers, start, width, block_width):
+    """Cover a window by at most three whole/prefix/suffix block registers."""
+    first_block, offset = divmod(start, block_width)
+    last_block = (start + width - 1) // block_width
+    if first_block == last_block:
+        return [registers[first_block]["whole"]]
 
     if offset == 0:
-        return [registers[block_index]["whole"]]
+        window = [registers[first_block]["whole"]]
+    else:
+        window = [registers[first_block]["suffix"][block_width - offset]]
+    for block_index in range(first_block + 1, last_block):
+        window.append(registers[block_index]["whole"])
+    prefix_size = start + width - last_block * block_width
+    window.append(registers[last_block]["prefix"][prefix_size])
+    return window
 
-    suffix_size = width - offset
-    prefix_size = offset
-    return [
-        registers[block_index]["suffix"][suffix_size],
-        registers[block_index + 1]["prefix"][prefix_size],
-    ]
+
+def _new_window_pairs(pool, registers, width, block_width, last_k):
+    pairs = set()
+    for start in range(pool.V - width + 1):
+        window = _window_registers(registers, start, width, block_width)
+        if width == last_k + 1:
+            # Only the first and last pieces can contain labels at the
+            # newly forbidden distance k-1. All other pairs were covered.
+            pairs.add((window[0], window[-1]))
+            pairs.add((window[-1], window[0]))
+            continue
+        for left in window:
+            a, b = pool.intervals[left]
+            for right in window:
+                c, d = pool.intervals[right]
+                largest_distance = max(b - 1 - c, d - 1 - a)
+                # If every label pair was forbidden at the previous k,
+                # the old edge constraints already imply this clause.
+                # This also works when the requested k skips thresholds.
+                if largest_distance >= last_k:
+                    pairs.add((left, right))
+    # Deterministic clause order helps make repeated benchmark runs comparable.
+    return sorted(pairs)
 
 
-def _add_distance_constraints(solver, edges, V, width, next_var):
-    clauses = 0
-    vertex_registers = []
+def _add_distance_constraints(solver, edges, V, width, next_var, counter_cache=None):
+    """Strengthen one solver monotonically; never remove old constraints.
 
-    for u in range(V):
-        variables = [varmap(u, i, V) for i in range(V)]
-        registers, next_var, added = _build_scamo_blocks(
-            solver, variables, width, next_var
-        )
-        vertex_registers.append(registers)
-        clauses += added
+    A cache belongs to one graph and one solver. The interval register pool
+    survives every block change, including k=4, 8, 16, ... .
+    """
+    if not 1 <= width <= V:
+        raise ValueError("The threshold must be between 1 and V")
+    edges = tuple(edges)
+    if counter_cache is None:
+        counter_cache = {}
+    if "pool" not in counter_cache:
+        counter_cache.update(pool=_CounterPool(V, edges, next_var),
+                             solver=solver, edges=edges, last_k=1)
+    pool = counter_cache["pool"]
+    if counter_cache["solver"] is not solver or pool.V != V or counter_cache["edges"] != edges:
+        raise ValueError("A counter cache must belong to the same solver and graph")
+    if next_var != pool.next_var:
+        raise ValueError("next_var does not match the counter cache")
+    last_k = counter_cache["last_k"]
+    if width < last_k:
+        raise ValueError("Incremental thresholds must not decrease")
+    if width == last_k:
+        return next_var, 0
+    if not edges:
+        counter_cache["last_k"] = width
+        return next_var, 0
 
+    block_width = 1 << (width.bit_length() - 1)
+    if counter_cache.get("block_width") != block_width:
+        counter_cache["blocks"] = _build_scamo_blocks(pool, block_width)
+        counter_cache["block_width"] = block_width
+    pairs = _new_window_pairs(pool, counter_cache["blocks"], width, block_width, last_k)
+    clauses = pool.add_definitions(solver)
+
+    pair_bases = []
+    for left, right in pairs:
+        left_base, left_aux = pool.literal_base(left)
+        right_base, right_aux = pool.literal_base(right)
+        pair_bases.append((left_base, left_aux, right_base, right_aux))
     for u, v in edges:
-        u, v = u - 1, v - 1
-        for left in range(V - width + 1):
-            u_window = _window_registers(vertex_registers[u], left, width)
-            v_window = _window_registers(vertex_registers[v], left, width)
+        u_assignment, v_assignment = (u - 1) * V, (v - 1) * V
+        u_aux, v_aux = pool.vertex_offsets[u - 1], pool.vertex_offsets[v - 1]
+        solver.append_formula([
+            [-(left + (u_aux if left_aux else u_assignment)),
+             -(right + (v_aux if right_aux else v_assignment))]
+            for left, left_aux, right, right_aux in pair_bases
+        ])
+    clauses += len(pairs) * len(edges)
+    counter_cache["last_k"] = width
+    return pool.next_var, clauses
 
-            # The AMZ condition for a window split across two blocks is a
-            # conjunction of zero-register literals. Distribute the OR
-            # between the two endpoint AMZ conditions into CNF clauses.
-            for u_register in u_window:
-                for v_register in v_window:
-                    clauses += _add_clause(
-                        solver, [-u_register, -v_register]
-                    )
 
-    return next_var, clauses
+def _upper_bound(edges, V):
+    """Match sorted graph degrees to possible label degrees at threshold k.
+
+    A label i has at most max(0, i-k) + max(0, V-i-k+1) possible neighbors.
+    If sorted degrees do not fit these sorted capacities, k is impossible.
+    """
+    degrees = [0] * V
+    for u, v in edges:
+        degrees[u - 1] += 1
+        degrees[v - 1] += 1
+    degrees.sort(reverse=True)
+    lower, upper = 1, V - 1
+    while lower < upper:
+        k = (lower + upper + 1) // 2
+        capacities = sorted(
+            (max(0, i - k) + max(0, V - i - k + 1) for i in range(1, V + 1)),
+            reverse=True,
+        )
+        if all(degree <= capacity for degree, capacity in zip(degrees, capacities)):
+            lower = k
+        else:
+            upper = k - 1
+    return upper
+
+
+def _decode_model(model, V):
+    labels = [0] * V
+    assignment_variables = V * V
+    for literal in model:
+        if 0 < literal <= assignment_variables:
+            u, i = divmod(literal - 1, V)
+            labels[u] = i + 1
+    return labels
 
 
 def find_max_k(edges, V):
@@ -136,23 +246,33 @@ def find_max_k(edges, V):
     edges = list(edges)
     if V < 1 or any(not (1 <= u <= V and 1 <= v <= V) or u == v for u, v in edges):
         raise ValueError("Invalid graph")
+    edges = sorted({(min(u, v), max(u, v)) for u, v in edges})
     max_k = 0
-    labels = [1] if V == 1 else None
+    labels = None
     encoding_time = 0.0
     solving_time = 0.0
     clauses = 0
     next_var = V * V + 1
+    counter_cache = {}
     start = perf_counter()
     print(f"ABP PHASE encoding {start}", flush=True)
+    upper_bound = _upper_bound(edges, V)
+    print(f"ABP UPPER_BOUND {upper_bound}", flush=True)
     with Solver(name="g3") as solver:
         clauses += _add_assignment_constraints(solver, V)
         encoding_time += perf_counter() - start
         print(f"ABP ENCODING_TIME {encoding_time}", flush=True)
-        for k in range(1, V):
+        k = 1
+        # V=1 uses the convention max_k=0; its only labeling is [1].
+        if V == 1:
+            labels = [1]
+        while k <= upper_bound:
             start = perf_counter()
             print(f"ABP PHASE encoding {start}", flush=True)
             if k > 1:
-                next_var, added = _add_distance_constraints(solver, edges, V, k, next_var)
+                next_var, added = _add_distance_constraints(
+                    solver, edges, V, k, next_var, counter_cache
+                )
                 clauses += added
             encoding_time += perf_counter() - start
             variables = max(0, solver.nof_vars())
@@ -164,14 +284,17 @@ def find_max_k(edges, V):
             if not is_sat:
                 print(f"ABP UNSAT k={k}", flush=True)
                 break
-            positive = {lit for lit in solver.get_model() if lit > 0}
-            labels = [next(i + 1 for i in range(V) if varmap(u, i, V) in positive) for u in range(V)]
-            max_k = k
-            valid = (sorted(labels) == list(range(1, V + 1))
-                     and all(abs(labels[u - 1] - labels[v - 1]) >= k for u, v in edges))
-            print(f"ABP SAT k={k} valid={valid}", flush=True)
+            labels = _decode_model(solver.get_model(), V)
+            actual_k = min((abs(labels[u - 1] - labels[v - 1]) for u, v in edges),
+                           default=V - 1)
+            valid = sorted(labels) == list(range(1, V + 1)) and actual_k >= k
+            print(f"ABP SAT k={actual_k} valid={valid}", flush=True)
             if not valid:
                 raise ValueError("Solver returned an invalid labeling")
+            max_k = actual_k
+            # The decoded model already proves every threshold <= actual_k.
+            # The cache still records the encoded k, not this incidental value.
+            k = actual_k + 1
         variables = max(0, solver.nof_vars())
     print(f"ABP PHASE done {perf_counter()}", flush=True)
     return {

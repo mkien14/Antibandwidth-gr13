@@ -1,0 +1,32 @@
+{
+  "cpu_model": "Intel(R) Xeon(R) CPU @ 2.20GHz",
+  "logical_cpus": 4,
+  "total_ram_gib": 31.35,
+  "available_ram_gib": 29.95,
+  "platform": "Linux-6.18.55+-x86_64-with-glibc2.39",
+  "python": "3.13.18",
+  "packages": {
+    "python-sat": "1.9.dev15",
+    "psutil": "7.2.2",
+    "ortools": "9.15.6755",
+    "protobuf": "6.33.6",
+    "docplex": "2.32.264",
+    "cplex": "22.2.0.0",
+    "gurobipy": "13.0.3"
+  },
+  "instances": [
+    "494_bus.mtx.rnd",
+    "662_bus.mtx.rnd",
+    "685_bus.mtx.rnd",
+    "ash85.mtx.rnd",
+    "bcspwr01.mtx.rnd",
+    "bcspwr02.mtx.rnd",
+    "bcspwr03.mtx.rnd",
+    "bcsstk01.mtx.rnd",
+    "bcsstk06.mtx.rnd",
+    "bcsstk07.mtx.rnd",
+    "can__445.mtx.rnd",
+    "can__715.mtx.rnd"
+  ],
+  "batch_index": 0
+}

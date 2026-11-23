@@ -4,4 +4,8 @@
 __pycache__/
 *.pyc
 
-report/ 
+report/
+
+# Local solver license and generated log (never commit credentials or runtime logs)
+/gurobi.lic
+/cplex.log
