@@ -1,0 +1,761 @@
+CAC CELL THAY THE CHO NOTEBOOK KAGGLE
+
+Copy noi dung ben trong moi khoi vao cell cung loai (Markdown hoac Code).
+Khong copy cac dong bat dau bang ```.
+Thay cac cell theo thu tu duoi day; khong can import notebook moi.
+
+CELL 1 - MARKDOWN - 1. Cấu hình
+
+```markdown
+# Antibandwidth Problem: SAT, ILP và CP
+
+So sánh Pairwise, Order, SCAMO, CPLEX CP, CPLEX MIP, Gurobi và CP-SAT trên
+24 đồ thị Harwell–Boeing. Mỗi lượt chạy có giới hạn 300 giây và 24 GiB RAM.
+Các phương pháp chạy tuần tự; mỗi solver sử dụng một worker.
+
+Notebook cần hai Input: gói mã nguồn ABP và bộ cài CPLEX Studio 22.2 cho Linux.
+Chọn Accelerator = None, bật Internet và cấp quyền cho ba Gurobi Secrets.
+
+## 1. Cấu hình
+
+Mỗi đợt gồm 12 đồ thị. Chạy lần lượt BATCH_INDEX = 0, 1.
+Giữ nguyên cấu hình thí nghiệm khi chạy tiếp; dùng EXPERIMENT mới khi đổi giới hạn.
+```
+
+CELL 2 - CODE - 1. Cấu hình
+
+```python
+from pathlib import Path
+
+EXPERIMENT = "abp_kaggle_300s_24g_scamo_v3"
+TIME_LIMIT = 300
+MEMORY_LIMIT_MB = 24576
+RUNS = 1
+
+METHODS = [
+    "pairwise", "order", "scamo", "cplex_cp",
+    "cplex_mip", "gurobi", "cp_sat",
+]
+
+BATCH_INDEX = 0
+BATCH_SIZE = 12
+
+SOURCE_LOCATION = None  # None: tự tìm gói mã nguồn trong Input.
+EXPECTED_SCAMO_SHA256 = "72cf0c0709250d520a545380d3b81aa53c76921638e29aa70b03b2d2c52b1adf"
+RESTORE_FROM = None     # Phiên sau: đường dẫn ZIP checkpoint trong Input.
+CPLEX_INSTALLER = None  # None: tự tìm bộ cài Linux trong Input.
+
+USE_GUROBI_WLS = True
+CPLEX_STUDIO_DIR = Path("/tmp/CPLEX_Studio222")
+
+INPUT = Path("/kaggle/input")
+WORK = Path("/kaggle/working")
+PROJECT = WORK / "abp_source"
+RESULTS = WORK / "abp-results" / EXPERIMENT
+SETUP = WORK / "abp-setup" / EXPERIMENT
+CSV_PATH = RESULTS / "results.csv"
+CHECKPOINT = WORK / f"checkpoint-{EXPERIMENT}.zip"
+
+# SQLite history không cần thiết cho việc lưu notebook hoặc kết quả benchmark.
+get_ipython().history_manager.enabled = False
+```
+
+CELL 3 - MARKDOWN - 2. Chuẩn bị mã nguồn và dữ liệu
+
+```markdown
+## 2. Chuẩn bị mã nguồn và dữ liệu
+
+Gói nguồn có thể nằm trong ZIP hoặc đã được Kaggle giải nén.
+Dữ liệu được chép sang working trước khi chạy. Mã SHA256 xác nhận đúng bản SCAMO;
+cell dừng nếu chỉ tìm thấy bản cũ. Khi có nhiều bản phù hợp, đặt SOURCE_LOCATION
+tới đúng thư mục hoặc ZIP muốn dùng. Không chọn nguồn theo thứ tự tìm thấy.
+```
+
+CELL 4 - CODE - 2. Chuẩn bị mã nguồn và dữ liệu
+
+```python
+import hashlib
+import shutil
+import tempfile
+import zipfile
+
+WORK.mkdir(parents=True, exist_ok=True)
+SETUP.mkdir(parents=True, exist_ok=True)
+
+with tempfile.TemporaryFile(mode="w+", dir=WORK) as stream:
+    stream.write("ok")
+    stream.seek(0)
+    assert stream.read() == "ok", "Không ghi được vào /kaggle/working."
+
+
+def extract_zip(archive_path, destination):
+    destination = Path(destination).resolve()
+    with zipfile.ZipFile(archive_path) as archive:
+        for member in archive.infolist():
+            target = (destination / member.filename).resolve()
+            if not target.is_relative_to(destination):
+                raise ValueError(f"Đường dẫn ZIP không hợp lệ: {member.filename}")
+        archive.extractall(destination)
+
+
+def source_hash(path):
+    path = Path(path)
+    if path.is_dir():
+        module = path / "src" / "scamo_encoding.py"
+        return hashlib.sha256(module.read_bytes()).hexdigest() if module.is_file() else None
+    if path.is_file() and zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as archive:
+            modules = [name for name in archive.namelist()
+                       if name.endswith("/src/scamo_encoding.py") or name == "src/scamo_encoding.py"]
+            if len(modules) == 1:
+                return hashlib.sha256(archive.read(modules[0])).hexdigest()
+    return None
+
+
+if SOURCE_LOCATION is None:
+    candidates = sorted({p.parent.parent for p in INPUT.rglob("scamo_encoding.py")
+                         if p.parent.name == "src"})
+    candidates += sorted(INPUT.rglob("abp_kaggle_source.zip"))
+    matching = [path for path in candidates if source_hash(path) == EXPECTED_SCAMO_SHA256]
+    if len(matching) != 1:
+        details = [(str(path), source_hash(path)) for path in candidates]
+        raise ValueError(
+            f"Cần một nguồn đúng SHA256, tìm thấy {len(matching)}. "
+            f"Cập nhật Input hoặc đặt SOURCE_LOCATION cụ thể. Các nguồn: {details}"
+        )
+    source = matching[0]
+else:
+    source = Path(SOURCE_LOCATION)
+if source_hash(source) != EXPECTED_SCAMO_SHA256:
+    raise ValueError(f"Nguồn không đúng bản SCAMO yêu cầu: {source}")
+
+if source.is_file():
+    with tempfile.TemporaryDirectory(dir=WORK) as folder:
+        extract_zip(source, folder)
+        roots = [p.parent.parent for p in Path(folder).rglob("scamo_encoding.py")
+                 if p.parent.name == "src"]
+        if len(roots) != 1:
+            raise ValueError("ZIP phải chứa duy nhất một thư mục mã nguồn ABP.")
+        shutil.copytree(roots[0], PROJECT, dirs_exist_ok=True)
+else:
+    shutil.copytree(source, PROJECT, dirs_exist_ok=True)
+
+if source_hash(PROJECT) != EXPECTED_SCAMO_SHA256:
+    raise RuntimeError("Bản SCAMO trong working không khớp Input.")
+print("Nguồn:", source)
+print("SCAMO SHA256:", source_hash(PROJECT))
+
+assert (PROJECT / "benchmark" / "run_sat_vs_ilp_cp.py").is_file()
+all_instances = sorted(path.name for path in (PROJECT / "data" / "hb").glob("*.rnd"))
+assert len(all_instances) == 24, f"Cần 24 đồ thị, tìm thấy {len(all_instances)}."
+if BATCH_INDEX < 0 or BATCH_SIZE < 1 or RUNS < 1:
+    raise ValueError("BATCH_INDEX >= 0, BATCH_SIZE >= 1 và RUNS >= 1.")
+
+start = BATCH_INDEX * BATCH_SIZE
+instances = all_instances[start:start + BATCH_SIZE]
+if not instances:
+    raise ValueError(f"Đợt này không có đồ thị. Chọn BATCH_INDEX từ 0 đến {(len(all_instances)-1)//BATCH_SIZE}.")
+
+attempts = len(instances) * len(METHODS) * RUNS
+print(f"Đợt {BATCH_INDEX}: {len(instances)} đồ thị, {attempts} lượt chạy.")
+print("Đồ thị:", ", ".join(instances))
+print(f"Ngân sách cho các lượt chưa trừ kết quả cũ: {attempts * TIME_LIMIT / 3600:.2f} giờ.")
+print("Cài đặt, kiểm tra và ghi checkpoint được thực hiện ngoài thời gian mỗi lượt.")
+```
+
+CELL 5 - MARKDOWN - 3. Cài thư viện Python
+
+```markdown
+## 3. Cài thư viện Python
+
+Ghim phiên bản để các đợt dùng cùng bộ thư viện. Protobuf 6.33.6 phù hợp với
+OR-Tools 9.15; benchmark không sử dụng grpcio-tools có sẵn trong Kaggle.
+Output cài đặt được lưu trong abp-setup để tra cứu khi cần.
+```
+
+CELL 6 - CODE - 3. Cài thư viện Python
+
+```python
+import importlib.metadata
+import subprocess
+import sys
+
+packages = [
+    "python-sat==1.9.dev15",
+    "psutil==7.2.2",
+    "ortools==9.15.6755",
+    "protobuf==6.33.6",
+]
+if any(method in METHODS for method in ["cplex_cp", "cplex_mip"]):
+    packages += ["docplex==2.32.264", "cplex==22.2.0.0"]
+if "gurobi" in METHODS:
+    packages += ["gurobipy==13.0.3"]
+
+installation = subprocess.run(
+    [sys.executable, "-m", "pip", "install", *packages],
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+)
+(SETUP / "pip-install.log").write_text(installation.stdout, encoding="utf-8")
+if installation.returncode:
+    print(installation.stdout[-6000:])
+installation.check_returncode()
+
+for requirement in packages:
+    name, expected = requirement.split("==")
+    actual = importlib.metadata.version(name)
+    assert actual == expected, f"{name}: cần {expected}, tìm thấy {actual}."
+    print(f"{name}: {actual}")
+if "dependency conflicts" in installation.stdout:
+    print("pip báo xung đột với gói có sẵn; xem", SETUP / "pip-install.log")
+    print("Cell 6 sẽ kiểm tra trực tiếp các phương pháp dùng trong benchmark.")
+```
+
+CELL 7 - MARKDOWN - 4. Cài runtime và cấu hình giấy phép
+
+```markdown
+## 4. Cài runtime và cấu hình giấy phép
+
+Cell tự cài CPLEX khi phiên mới chưa có runtime, sau đó nâng cấp Python runtime
+từ bản Studio đã cài. Bộ cài và file Gurobi WLS được đặt trong /tmp.
+Ba Gurobi Secrets cần có: WLSACCESSID, WLSSECRET và LICENSEID.
+
+Cấu hình này sử dụng bản CPLEX mà bạn đã xác nhận được phép dùng trên Kaggle.
+
+[IBM runtime setup](https://www.ibm.com/docs/en/icos/22.1.2?topic=rnco2-cplex-python-api-now-installed-using-pip-conda)
+```
+
+CELL 8 - CODE - 4. Cài runtime và cấu hình giấy phép
+
+```python
+import importlib.util
+import os
+
+if any(method in METHODS for method in ["cplex_cp", "cplex_mip"]):
+    studio = Path(CPLEX_STUDIO_DIR)
+    version = importlib.metadata.version("cplex")
+    library_name = "libcplex" + "".join(version.split(".")[:3]) + ".so"
+
+    cp_sources = list((studio / "cpoptimizer" / "bin").rglob("cpoptimizer"))
+    libraries = list((studio / "cplex" / "bin").rglob(library_name))
+
+    if not cp_sources or not libraries:
+        installers = [Path(CPLEX_INSTALLER)] if CPLEX_INSTALLER else sorted(INPUT.rglob("*CPLEX*LIN.bin"))
+        if len(installers) != 1 or not installers[0].is_file():
+            raise FileNotFoundError(f"Đặt CPLEX_INSTALLER tới bộ cài Linux trong Input: {installers}")
+
+        installer = Path("/tmp") / installers[0].name
+        shutil.copy2(installers[0], installer)
+        installer.chmod(0o755)
+
+        response_file = Path("/tmp/cplex-install.properties")
+        response_file.write_text(
+            "INSTALLER_UI=silent\n"
+            "LICENSE_ACCEPTED=true\n"
+            "USER_INPUT_SEGMENT_FALSE=1\n"
+            f"USER_INSTALL_DIR={studio}\n"
+            "INSTALLER_LOCALE=en\n",
+            encoding="utf-8",
+        )
+        print("Đang cài CPLEX Studio...")
+        installation = subprocess.run(
+            [str(installer), "-f", str(response_file)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            timeout=600,
+        )
+        (SETUP / "cplex-install.log").write_text(installation.stdout, encoding="utf-8")
+        if installation.returncode:
+            print(installation.stdout[-6000:])
+        installation.check_returncode()
+        cp_sources = list((studio / "cpoptimizer" / "bin").rglob("cpoptimizer"))
+        libraries = list((studio / "cplex" / "bin").rglob(library_name))
+
+    if len(cp_sources) != 1 or len(libraries) != 1:
+        raise RuntimeError(f"Kiểm tra bộ cài CPLEX {version}: {cp_sources}, {libraries}")
+
+    # Đặt executable vào thư mục mà docplex config --upgrade tìm được.
+    package = importlib.util.find_spec("cplex")
+    cp_runtime = Path(package.origin).parent / "cpoptimizer"
+    shutil.copy2(cp_sources[0], cp_runtime)
+    cp_runtime.chmod(cp_runtime.stat().st_mode | 0o111)
+    upgrade = subprocess.run(
+        [sys.executable, "-m", "docplex.util.cli", "config", "--upgrade", str(studio)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120,
+    )
+    (SETUP / "cplex-upgrade.log").write_text(upgrade.stdout, encoding="utf-8")
+    if upgrade.returncode:
+        print(upgrade.stdout[-6000:])
+    upgrade.check_returncode()
+    os.environ["DOCPLEX_CP_CONTEXT"] = f"solver.local.execfile={cp_runtime}"
+    print(f"CPLEX {version}: runtime đã sẵn sàng.")
+
+if "gurobi" in METHODS:
+    if not USE_GUROBI_WLS:
+        raise ValueError("Bật USE_GUROBI_WLS khi chạy Gurobi trên Kaggle.")
+
+    from kaggle_secrets import UserSecretsClient
+
+    secrets = UserSecretsClient()
+    credentials = {}
+    for key in ["WLSACCESSID", "WLSSECRET", "LICENSEID"]:
+        value = secrets.get_secret(key).strip()
+        if not value or "\n" in value or "\r" in value:
+            raise ValueError(f"Secret không hợp lệ: {key}")
+        credentials[key] = value
+    if int(credentials["LICENSEID"]) <= 0:
+        raise ValueError("LICENSEID phải là số nguyên dương.")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lic", dir="/tmp", encoding="utf-8", delete=False) as license_file:
+        for key, value in credentials.items():
+            license_file.write(f"{key}={value}\n")
+    os.environ["GRB_LICENSE_FILE"] = license_file.name
+    del credentials, value
+    print("Gurobi: đã cấu hình WLS; kết nối được kiểm tra ở cell 6.")
+```
+
+CELL 9 - CODE - 4. Cài runtime và cấu hình giấy phép
+
+```python
+# Kiểm tra CPLEX với 1.100 biến trước khi chạy dữ liệu thực nghiệm.
+if any(method in METHODS for method in ["cplex_cp", "cplex_mip"]):
+    capacity_check = '''
+from docplex.mp.model import Model
+from docplex.cp.model import CpoModel
+
+with Model(name="check_mip") as model:
+    x = model.binary_var_list(1100)
+    model.add_constraint(model.sum(x) <= 1)
+    model.maximize(model.sum(x))
+    model.parameters.threads = 1
+    model.parameters.timelimit = 10
+    solution = model.solve(log_output=False)
+    assert solution is not None and abs(solution.objective_value - 1) < 1e-6
+print("CPLEX MIP: OK", flush=True)
+
+model = CpoModel()
+x = [model.integer_var(min=0, max=1, name=f"x_{i}") for i in range(1100)]
+model.add(model.sum(x) <= 1)
+model.add(model.maximize(model.sum(x)))
+solution = model.solve(Workers=1, TimeLimit=10, LogVerbosity="Quiet")
+assert solution.is_solution() and solution.get_objective_values()[0] == 1
+print("CP Optimizer: OK", flush=True)
+'''
+    capacity_result = subprocess.run(
+        [sys.executable, "-u", "-c", capacity_check],
+        check=True, timeout=60, cwd=SETUP,
+    )
+```
+
+CELL 10 - MARKDOWN - 5. Khôi phục kết quả và ghi thông tin thí nghiệm
+
+```markdown
+## 5. Khôi phục kết quả và ghi thông tin thí nghiệm
+
+Phiên đầu để RESTORE_FROM = None. Phiên sau thêm checkpoint vào Input và đặt
+RESTORE_FROM tới ZIP hoặc thư mục chứa experiment.json và results.csv.
+Kết quả đang có trong working được ưu tiên để giữ tiến độ mới nhất.
+
+Cấu hình, mã nguồn và phiên bản thư viện phải khớp khi chạy tiếp.
+Thông tin CPU, RAM được ghi riêng cho từng phiên để đối chiếu khi tổng hợp kết quả.
+```
+
+CELL 11 - CODE - 5. Khôi phục kết quả và ghi thông tin thí nghiệm
+
+```python
+import hashlib
+import json
+import platform
+from datetime import datetime, timezone
+
+import psutil
+
+memory = psutil.virtual_memory()
+if MEMORY_LIMIT_MB * 1024**2 >= memory.available:
+    raise RuntimeError(
+        f"RAM khả dụng: {memory.available / 1024**3:.2f} GiB; "
+        f"cần lớn hơn giới hạn {MEMORY_LIMIT_MB / 1024:.0f} GiB."
+    )
+
+if RESTORE_FROM is not None and not CSV_PATH.exists():
+    restore = Path(RESTORE_FROM)
+    if restore.is_file():
+        with tempfile.TemporaryDirectory() as folder:
+            extract_zip(restore, folder)
+            matches = list(Path(folder).rglob("experiment.json"))
+            if len(matches) != 1 or not (matches[0].parent / "results.csv").is_file():
+                raise ValueError("Checkpoint phải chứa experiment.json và results.csv.")
+            shutil.copytree(matches[0].parent, RESULTS, dirs_exist_ok=True)
+    else:
+        if not (restore / "experiment.json").is_file() or not (restore / "results.csv").is_file():
+            raise ValueError("RESTORE_FROM phải chứa experiment.json và results.csv.")
+        shutil.copytree(restore, RESULTS, dirs_exist_ok=True)
+
+RESULTS.mkdir(parents=True, exist_ok=True)
+digest = hashlib.sha256()
+source_files = list((PROJECT / "src").glob("*.py"))
+source_files += list((PROJECT / "data" / "hb").glob("*.rnd"))
+source_files += [PROJECT / "benchmark" / "run_sat_vs_ilp_cp.py"]
+for path in sorted(source_files):
+    digest.update(path.relative_to(PROJECT).as_posix().encode())
+    digest.update(path.read_bytes())
+
+versions = {
+    package.split("==")[0]: importlib.metadata.version(package.split("==")[0])
+    for package in packages
+}
+settings = dict(
+    source_sha256=digest.hexdigest(), time_limit=TIME_LIMIT,
+    memory_limit_mb=MEMORY_LIMIT_MB, runs=RUNS, methods=METHODS,
+    python=platform.python_version(), packages=versions,
+)
+settings_path = RESULTS / "experiment.json"
+if settings_path.exists():
+    previous = json.loads(settings_path.read_text(encoding="utf-8"))
+    if previous != settings:
+        raise ValueError("Cấu hình khác checkpoint. Dùng cấu hình cũ hoặc EXPERIMENT mới với RESTORE_FROM=None.")
+elif CSV_PATH.exists():
+    raise ValueError("CSV thiếu experiment.json; cần khôi phục checkpoint đầy đủ.")
+else:
+    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+cpu_model = platform.processor()
+cpu_info = Path("/proc/cpuinfo")
+if cpu_info.exists():
+    cpu_model = next(
+        (line.split(":", 1)[1].strip() for line in cpu_info.read_text().splitlines()
+         if line.startswith("model name")), cpu_model,
+    )
+environment = dict(
+    source_location=str(source), scamo_sha256=source_hash(PROJECT),
+    cpu_model=cpu_model, logical_cpus=os.cpu_count(),
+    total_ram_gib=round(memory.total / 1024**3, 2),
+    available_ram_gib=round(memory.available / 1024**3, 2),
+    platform=platform.platform(), python=platform.python_version(),
+    packages=versions, instances=instances, batch_index=BATCH_INDEX,
+)
+timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+(RESULTS / f"environment-{timestamp}.json").write_text(
+    json.dumps(environment, indent=2), encoding="utf-8",
+)
+print(f"CPU: {cpu_model}")
+print(f"RAM khả dụng: {memory.available / 1024**3:.2f} GiB")
+print("CSV:", CSV_PATH)
+```
+
+CELL 12 - MARKDOWN - 6. Kiểm tra các phương pháp và chuẩn bị lượt chạy
+
+```markdown
+## 6. Kiểm tra các phương pháp và chuẩn bị lượt chạy
+
+Chạy các kiểm thử timeout, memory limit và resume của bộ điều phối.
+Sau đó kiểm tra từng phương pháp trên chu trình 5 đỉnh, có giá trị tối ưu bằng 2.
+Mỗi phương pháp được chạy trong tiến trình riêng, giống benchmark.
+
+Các kết quả kiểm tra nằm trong abp-setup, không được thêm vào CSV thực nghiệm.
+Nếu một phương pháp chưa hoạt động, cell dừng để xử lý trước khi chạy đợt chính.
+```
+
+CELL 13 - CODE - 6. Kiểm tra các phương pháp và chuẩn bị lượt chạy
+
+```python
+import csv
+
+test_result = subprocess.run(
+    [sys.executable, "-X", "utf8", "-m", "unittest", "discover",
+     "-s", str(PROJECT / "benchmark"), "-p", "test_benchmark.py"],
+    cwd=PROJECT, check=True,
+)
+
+preflight = PROJECT / "benchmark" / "kaggle_check.py"
+preflight.write_text(
+    f'''from pathlib import Path
+import run_sat_vs_ilp_cp as runner
+
+if __name__ == "__main__":
+    folder = Path({str(SETUP)!r})
+    graph = folder / "cycle5.rnd"
+    graph.write_text("cycle5\\n5 5 5\\n1 2\\n2 3\\n3 4\\n4 5\\n5 1\\n", encoding="utf-8")
+    runner.TIME_LIMIT = 30
+    runner.MEMORY_LIMIT_MB = {MEMORY_LIMIT_MB!r}
+    for method in {METHODS!r}:
+        log = folder / f"check-{{method}}.log"
+        result = runner.run_one(graph, method, log)
+        if result["status"] != "Optimal" or result["best_k"] != 2:
+            raise RuntimeError(f"{{method}}: {{result}}. Xem log: {{log}}")
+        print(f"{{method}}: OK", flush=True)
+''',
+    encoding="utf-8",
+)
+preflight_result = subprocess.run(
+    [sys.executable, "-X", "utf8", "-u", str(preflight)],
+    cwd=PROJECT, check=True,
+)
+
+# Mỗi lần gọi launcher xử lý một phương pháp và một đồ thị.
+# RUNS tăng tới lượt được yêu cầu; runner bỏ qua các lượt đã có trong CSV.
+launcher = PROJECT / "benchmark" / "kaggle_entry.py"
+launcher.write_text(
+    f'''from pathlib import Path
+import sys
+import run_sat_vs_ilp_cp as runner
+
+if __name__ == "__main__":
+    runner.INSTANCES = [sys.argv[1]]
+    runner.METHODS = [sys.argv[2]]
+    runner.RUNS = int(sys.argv[3])
+    runner.TIME_LIMIT = {TIME_LIMIT!r}
+    runner.MEMORY_LIMIT_MB = {MEMORY_LIMIT_MB!r}
+    runner.OUTPUT = Path({str(CSV_PATH)!r})
+    runner.main()
+''',
+    encoding="utf-8",
+)
+
+sys.path.insert(0, str(PROJECT / "benchmark"))
+import run_sat_vs_ilp_cp as runner
+
+runner = importlib.reload(runner)
+completed, has_header = runner.read_completed_runs(CSV_PATH)
+if not has_header:
+    with CSV_PATH.open("w", encoding="utf-8-sig", newline="") as stream:
+        csv.writer(stream).writerow(runner.FIELDS)
+
+planned = [
+    (instance, method, run)
+    for instance in instances
+    for run in range(1, RUNS + 1)
+    for method in METHODS
+]
+pending = [key for key in planned if key not in completed]
+print(f"Đợt {BATCH_INDEX}: đã có {len(planned) - len(pending)}/{len(planned)} lượt.")
+print(f"Còn {len(pending)} lượt, ngân sách {len(pending) * TIME_LIMIT / 3600:.2f} giờ.")
+```
+
+CELL 14 - MARKDOWN - 7. Chạy benchmark
+
+```markdown
+## 7. Chạy benchmark
+
+Kết quả được ghi CSV và nén checkpoint sau từng lượt, trước khi bắt đầu lượt kế tiếp.
+Dùng Interrupt để dừng. Lượt đang dở sẽ được chạy lại từ đầu khi tiếp tục.
+Chỉ chạy một cell benchmark tại một thời điểm.
+```
+
+CELL 15 - CODE - 7. Chạy benchmark
+
+```python
+import signal
+
+
+def export_checkpoint():
+    temporary = CHECKPOINT.with_suffix(".zip.tmp")
+    with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(RESULTS.rglob("*")):
+            if path.is_file():
+                name = Path(EXPERIMENT) / path.relative_to(RESULTS)
+                archive.write(path, name.as_posix())
+    temporary.replace(CHECKPOINT)
+
+
+def run_attempt(instance, method, run):
+    process = subprocess.Popen(
+        [sys.executable, "-X", "utf8", "-u", str(launcher), instance, method, str(run)],
+        cwd=PROJECT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", bufsize=1, start_new_session=True,
+    )
+    try:
+        for line in process.stdout:
+            print(line, end="", flush=True)
+        if process.wait() != 0:
+            raise RuntimeError(f"Tiến trình benchmark kết thúc với mã {process.returncode}.")
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+        process.stdout.close()
+
+
+# Đọc lại CSV mỗi khi chạy cell, kể cả sau Interrupt trong cùng phiên.
+completed, _ = runner.read_completed_runs(CSV_PATH)
+pending = [key for key in planned if key not in completed]
+export_checkpoint()
+try:
+    for position, (instance, method, run) in enumerate(pending, start=1):
+        print(f"\n[{position}/{len(pending)}] {instance} | {method} | run {run}", flush=True)
+        run_attempt(instance, method, run)
+        export_checkpoint()
+        saved, _ = runner.read_completed_runs(CSV_PATH)
+        if (instance, method, run) not in saved:
+            raise RuntimeError("Lượt chạy chưa ghi kết quả. Đã giữ checkpoint để chạy tiếp.")
+except KeyboardInterrupt:
+    print("\nĐã dừng. Các lượt hoàn tất được giữ trong CSV.")
+finally:
+    export_checkpoint()
+    print("Checkpoint:", CHECKPOINT)
+```
+
+CELL 16 - MARKDOWN - 8. Kết quả và chạy tiếp
+
+```markdown
+## 8. Kết quả và chạy tiếp
+
+Số lượt bằng số đồ thị trong đợt × số phương pháp × RUNS; phần 6 in số lượt còn thiếu.
+Với BATCH_SIZE = 12, bảy phương pháp và RUNS = 1: mỗi đợt có 84 lượt,
+ngân sách 7 giờ nếu mọi lượt đều dùng hết 300 giây. Thời gian thiết lập,
+kiểm tra và lưu checkpoint tính riêng.
+
+- Cùng phiên, cùng đợt: chạy lại cell 7 để tiếp tục các lượt còn thiếu.
+- Đợt mới trong cùng phiên: đổi BATCH_INDEX ở cell 1, chạy lại cell 1, 2, 5, 6, 7, 8.
+- Phiên mới: thêm checkpoint vào Input, đặt RESTORE_FROM rồi chạy từ đầu.
+- Optimal, Timeout, MemoryLimit và Error đã có trong CSV đều được bỏ qua.
+  Muốn thử lại dòng Error cần xử lý rõ trong một bản kết quả riêng.
+
+Lưu ZIP checkpoint trước khi kết thúc phiên. Checkpoint nằm trong working
+chưa thay thế cho một bản output đã lưu hoặc đã tải về máy.
+Save Version → Save & Run All tạo phiên sạch và thực hiện notebook từ đầu;
+cell 4 sẽ tự cài CPLEX. Phiên đầu dùng BATCH_INDEX = 0, RESTORE_FROM = None.
+Kiểm tra output của version đã lưu trước khi chuyển sang đợt tiếp theo.
+
+[Kaggle Notebooks](https://www.kaggle.com/docs/notebooks)
+```
+
+CELL 17 - CODE - 8. Kết quả và chạy tiếp
+
+```python
+from collections import Counter
+from IPython.display import FileLink, display
+
+with CSV_PATH.open(encoding="utf-8-sig", newline="") as stream:
+    rows = list(csv.DictReader(stream))
+
+completed, _ = runner.read_completed_runs(CSV_PATH)
+batch_keys = set(planned)
+batch_rows = [
+    row for row in rows
+    if (row["instance"], row["method"], int(row["run"])) in batch_keys
+]
+
+print(f"Đợt {BATCH_INDEX}: {len(batch_keys & completed)}/{len(batch_keys)} lượt.")
+print(f"Toàn thí nghiệm: {len(completed)}/{len(all_instances) * len(METHODS) * RUNS} lượt.")
+print("Trạng thái trong đợt:", dict(Counter(row["status"] for row in batch_rows)))
+if any(row["status"] == "Error" for row in batch_rows):
+    print("Có lượt Error; xem log trước khi tổng hợp kết quả.")
+
+print("Thư mục kết quả:", RESULTS)
+print("Log từng lượt:", RESULTS / "logs" / CSV_PATH.stem)
+export_checkpoint()
+display(FileLink(str(CSV_PATH.relative_to(WORK))))
+display(FileLink(str(CHECKPOINT.relative_to(WORK))))
+```
+
+CELL 18 - MARKDOWN - 9. Kiểm tra thời gian SAT
+
+```markdown
+## 9. Kiểm tra thời gian SAT
+
+Đọc log của Pairwise, Order và SCAMO để đối chiếu thời gian encoding, solving,
+số biến và nghiệm tốt nhất đã kiểm tra. `encoding_reported_s` và `solving_reported_s`
+là các tổng thời gian đã được solver ghi hoàn tất; nếu timeout giữa một bước,
+thời gian bước đang dở chưa nằm trong tổng này. `unattributed_s` còn gồm khởi động,
+giải mã nghiệm và phần bước đang dở, nên không được xem toàn bộ là thời gian solving.
+
+`last_phase` cho biết pha cuối cùng được ghi trước khi dừng. Timeout với `best_k`
+chỉ cung cấp một cận dưới, chưa chứng minh tối ưu. File chẩn đoán được lưu riêng
+trong checkpoint; CSV benchmark giữ nguyên định dạng. Cell cũng so sánh `best_k`
+trong CSV với nghiệm hợp lệ cuối cùng của log và báo các khóa bị lặp.
+```
+
+CELL 19 - CODE - 9. Kiểm tra thời gian SAT
+
+```python
+import csv
+import re
+
+
+def inspect_sat_log(path):
+    result = dict(encoding_reported_s=None, solving_reported_s=None,
+                  variables=None, last_phase=None, last_valid_k=None)
+    if not path.is_file():
+        result["last_phase"] = "missing_log"
+        return result
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            if not line.endswith("\n"):
+                continue
+            for marker, field, convert in [
+                ("ABP ENCODING_TIME ", "encoding_reported_s", float),
+                ("ABP SOLVING_TIME ", "solving_reported_s", float),
+                ("ABP VARIABLES ", "variables", int),
+            ]:
+                if line.startswith(marker):
+                    try:
+                        result[field] = convert(line[len(marker):].strip())
+                    except ValueError:
+                        pass
+            if line.startswith("ABP PHASE "):
+                result["last_phase"] = line.split()[2]
+            match = re.fullmatch(r"ABP SAT k=(\d+) valid=True\s*", line)
+            if match:
+                result["last_valid_k"] = max(result["last_valid_k"] or 0, int(match[1]))
+    return result
+
+
+with CSV_PATH.open(encoding="utf-8-sig", newline="") as stream:
+    result_rows = list(csv.DictReader(stream))
+
+diagnostics = []
+discrepancies = []
+duplicate_keys = []
+seen_keys = set()
+for row in result_rows:
+    key = (row["instance"], row["method"], row["run"])
+    if key in seen_keys:
+        duplicate_keys.append(key)
+    seen_keys.add(key)
+    if row["method"] not in ("pairwise", "order", "scamo"):
+        continue
+    log = RESULTS / "logs" / CSV_PATH.stem / f'{row["instance"]}.{row["method"]}.run{row["run"]}.log'
+    info = inspect_sat_log(log)
+    if log.is_file():
+        csv_k = int(row["best_k"]) if row["best_k"].strip() else None
+        if csv_k != info["last_valid_k"]:
+            discrepancies.append((key, csv_k, info["last_valid_k"], str(log)))
+    recorded = sum(info[key] or 0 for key in ("encoding_reported_s", "solving_reported_s"))
+    remainder = max(0.0, float(row["time_s"]) - recorded)
+    diagnostics.append({**row, **info, "unattributed_s": round(remainder, 3)})
+    enc, solve = info["encoding_reported_s"], info["solving_reported_s"]
+    enc_text = f"{enc:.2f}s" if enc is not None else "chưa ghi"
+    solve_text = f"{solve:.2f}s" if solve is not None else "chưa ghi"
+    print(f'{row["instance"]} | {row["method"]} | run {row["run"]} | k={row["best_k"]} '
+          f'| encode={enc_text} | solve={solve_text} | chưa phân bổ={remainder:.2f}s '
+          f'| pha cuối={info["last_phase"]} | biến={info["variables"]}')
+
+if duplicate_keys:
+    print("Các khóa xuất hiện nhiều lần trong CSV:", duplicate_keys)
+if discrepancies:
+    print("CSV và log không khớp (khóa, k trong CSV, k trong log, đường dẫn log):")
+    for item in discrepancies:
+        print(item)
+elif not duplicate_keys:
+    print("Không phát hiện chênh lệch k giữa CSV và các log SAT hiện có.")
+
+if diagnostics:
+    diagnostic_path = RESULTS / "sat-diagnostics.csv"
+    with diagnostic_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(diagnostics[0]))
+        writer.writeheader()
+        writer.writerows(diagnostics)
+    export_checkpoint()
+    display(FileLink(str(diagnostic_path.relative_to(WORK))))
+else:
+    print("CSV chưa có lượt SAT nào để kiểm tra.")
+```
