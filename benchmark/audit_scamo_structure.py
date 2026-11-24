@@ -21,13 +21,14 @@ def audit(path, thresholds):
     edges = sorted({tuple(sorted(edge)) for edge in edges})
     if not thresholds or any(k < 2 or k > V for k in thresholds):
         raise ValueError("Thresholds must be in 2..V")
-    # The benchmarked SCAMO version uses the shared pairwise permutation CNF.
-    assignment_clauses = V * V * (V - 1) + 2 * V
-    pool = _CounterPool(V, edges, V * V + 1)
+    # SCAMO uses NSC for each row and column; pairwise remains unchanged.
+    assignment_clauses = 2 * V * (4 * V - 4) if V > 1 else 2
+    assignment_aux = 2 * V * (V - 1)
+    pool = _CounterPool(V, edges, V * V + assignment_aux + 1)
     previous_width, clauses = 0, 0
     counts = []
     for k in range(2, max(thresholds) + 1):
-        width = 1 << (k.bit_length() - 1)
+        width = k
         if width != previous_width:
             blocks = _build_scamo_blocks(pool, width)
             previous_width = width
@@ -42,9 +43,9 @@ def audit(path, thresholds):
     return dict(instance=path.name, vertices=V, edges=len(edges),
                 mode="consecutive_thresholds_without_solving",
                 assignment_variables=V * V,
-                scamo_assignment_auxiliary_variables=0,
+                scamo_assignment_auxiliary_variables=assignment_aux,
                 scamo_assignment_clauses=assignment_clauses,
-                pairwise_assignment_clauses=assignment_clauses,
+                pairwise_assignment_clauses=V * V * (V - 1) + 2 * V,
                 counts=counts)
 
 

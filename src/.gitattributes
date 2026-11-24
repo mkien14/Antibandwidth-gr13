@@ -1,0 +1,2 @@
+# Keep the benchmarked SCAMO file byte-identical to the Kaggle source ZIP.
+scamo_encoding.py -text whitespace=cr-at-eol
