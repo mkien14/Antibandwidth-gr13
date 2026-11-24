@@ -1,4 +1,4 @@
-"""Run with python benchmark/run_sat_vs_ilp_cp.py; rerun to resume from CSV."""
+"""Run with python experiments/benchmark/run_sat_vs_ilp_cp.py; rerun to resume."""
 import csv
 import math
 import multiprocessing as mp
@@ -16,10 +16,12 @@ TIME_LIMIT = 300           # Seconds for startup + encoding + solving.
 MEMORY_LIMIT_MB = 4096      # 4 GiB for the method process and its children.
 RUNS = 1
 
-ROOT = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parent
+# Also supports the original Kaggle source ZIP, which places benchmark/ at root.
+ROOT = HERE.parent.parent if HERE.parent.name == "experiments" else HERE.parent
 INSTANCES = sorted(path.name for path in (ROOT / "data" / "hb").glob("*.rnd"))
 # Keep the same settings when resuming. Use a new OUTPUT for different limits/solvers.
-OUTPUT = ROOT / "benchmark" / "sat_vs_ilp_cp.csv"
+OUTPUT = HERE / "sat_vs_ilp_cp.csv"
 FIELDS = ["instance", "method", "run", "best_k", "time_s", "memory_mb", "status"]
 
 

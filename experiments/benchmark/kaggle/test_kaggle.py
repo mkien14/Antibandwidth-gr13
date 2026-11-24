@@ -1,4 +1,4 @@
-"""Check notebook drift, source selection, and truncated SAT logs offline."""
+"""Check notebook structure, source selection, and truncated SAT logs offline."""
 import ast
 from contextlib import redirect_stdout
 import hashlib
@@ -16,9 +16,10 @@ class KaggleNotebookTests(unittest.TestCase):
     def setUp(self):
         self.cells = read_cells()
 
-    def test_notebook_matches_copy_cells_and_has_no_outputs(self):
+    def test_notebook_has_expected_cells_and_no_outputs(self):
         notebook = json.loads((HERE / "abp_kaggle.ipynb").read_text(encoding="utf-8"))
         self.assertEqual(notebook["cells"], self.cells)
+        self.assertEqual(len(self.cells), 19)
         for cell in notebook["cells"]:
             if cell["cell_type"] == "code":
                 self.assertEqual(cell["outputs"], [])
