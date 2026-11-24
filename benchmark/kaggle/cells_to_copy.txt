@@ -18,7 +18,7 @@ Chọn Accelerator = None, bật Internet và cấp quyền cho ba Gurobi Secret
 
 ## 1. Cấu hình
 
-Mỗi đợt gồm 12 đồ thị. Chạy lần lượt BATCH_INDEX = 0, 1.
+Mỗi đợt gồm 12 đồ thị và bảy phương pháp. Chạy lần lượt BATCH_INDEX = 0, 1.
 Giữ nguyên cấu hình thí nghiệm khi chạy tiếp; dùng EXPERIMENT mới khi đổi giới hạn.
 ```
 
@@ -27,7 +27,7 @@ CELL 2 - CODE - 1. Cấu hình
 ```python
 from pathlib import Path
 
-EXPERIMENT = "abp_kaggle_300s_24g_scamo_v3"
+EXPERIMENT = "abp_kaggle_300s_24g_all_scl_nsc"
 TIME_LIMIT = 300
 MEMORY_LIMIT_MB = 24576
 RUNS = 1
@@ -41,7 +41,7 @@ BATCH_INDEX = 0
 BATCH_SIZE = 12
 
 SOURCE_LOCATION = None  # None: tự tìm gói mã nguồn trong Input.
-EXPECTED_SCAMO_SHA256 = "72cf0c0709250d520a545380d3b81aa53c76921638e29aa70b03b2d2c52b1adf"
+EXPECTED_SCAMO_SHA256 = "f5f3f34a4bb335317e83645c54b8a9519b97492a681edeab61edb2baa1b028e9"
 RESTORE_FROM = None     # Phiên sau: đường dẫn ZIP checkpoint trong Input.
 CPLEX_INSTALLER = None  # None: tự tìm bộ cài Linux trong Input.
 

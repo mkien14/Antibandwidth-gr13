@@ -1,0 +1,16 @@
+{
+  "source_sha256": "b3b183be997455f75974c85a2f968262f4acf270bcdcb6e74fda138f0bd10e0a",
+  "time_limit": 300,
+  "memory_limit_mb": 24576,
+  "runs": 1,
+  "methods": [
+    "scamo"
+  ],
+  "python": "3.13.18",
+  "packages": {
+    "python-sat": "1.9.dev15",
+    "psutil": "7.2.2",
+    "ortools": "9.15.6755",
+    "protobuf": "6.33.6"
+  }
+}

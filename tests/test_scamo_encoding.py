@@ -10,9 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from pysat.solvers import Solver
 
-from sat_common import _add_assignment_constraints, varmap
+from pairwise_encoding import _add_assignment_constraints, varmap
 from scamo_encoding import (
-    _add_distance_constraints, _decode_model, _upper_bound, find_max_k,
+    _add_distance_constraints, _add_nsc_assignment_constraints,
+    _decode_model, _upper_bound, find_max_k,
 )
 
 
@@ -25,6 +26,19 @@ def brute_force(edges, V):
 
 
 class ScamoEncodingTests(unittest.TestCase):
+    def test_nsc_assignment_accepts_exactly_permutations(self):
+        for V in range(1, 5):
+            with self.subTest(V=V), Solver(name="g3") as solver:
+                next_var, clauses = _add_nsc_assignment_constraints(solver, V)
+                self.assertEqual(next_var, V * V + 2 * V * (V - 1) + 1)
+                self.assertEqual(clauses, 2 * V * (4 * V - 4) if V > 1 else 2)
+                for labels in itertools.product(range(V), repeat=V):
+                    assumptions = [varmap(u, label, V) for u, label in enumerate(labels)]
+                    self.assertEqual(solver.solve(assumptions=assumptions),
+                                     len(set(labels)) == V, labels)
+                if V > 1:
+                    self.assertFalse(solver.solve(assumptions=[varmap(0, 0, V), varmap(0, 1, V)]))
+
     def test_optimum_matches_brute_force_for_small_graphs(self):
         for V in range(2, 6):
             possible_edges = list(itertools.combinations(range(1, V + 1), 2))
@@ -74,7 +88,7 @@ class ScamoEncodingTests(unittest.TestCase):
                         self.assertEqual(is_sat, expected, (width, a, b))
 
     def test_incremental_thresholds_match_label_distance(self):
-        # Cover full/partial blocks and windows intersecting three blocks.
+        # Cover full/partial SCL blocks and adjacent-block windows.
         for V in (2, 5, 8, 9, 16, 17):
             with Solver(name="g3") as solver:
                 _add_assignment_constraints(solver, V)
@@ -101,10 +115,8 @@ class ScamoEncodingTests(unittest.TestCase):
                 next_var, _ = _add_distance_constraints(
                     solver, [(1, 2)], V, k, next_var, cache
                 )
-                if k in (2, 4, 8, 16):
-                    self.assertGreater(next_var, previous_var)
-                else:
-                    self.assertEqual(next_var, previous_var, k)
+                self.assertGreaterEqual(next_var, previous_var)
+                self.assertEqual(cache["block_width"], k)
                 self.assertEqual(
                     _add_distance_constraints(solver, [(1, 2)], V, k, next_var, cache),
                     (next_var, 0),

@@ -2,7 +2,33 @@ from time import perf_counter
 
 from pysat.solvers import Solver
 
-from sat_common import _add_assignment_constraints
+def _add_nsc_assignment_constraints(solver, V):
+    """Encode row/column exactly-one using the author's NSC clauses.
+
+    Both families are installed once because the incremental search also
+    solves k=1, before any SCL blocks have been constructed. This is separate
+    from the shared pairwise encoding used by the other SAT method.
+    """
+    next_var = V * V + 1
+    total = 0
+    for axis in range(2):
+        for index in range(V):
+            xs = ([index * V + j + 1 for j in range(V)] if axis == 0 else
+                  [j * V + index + 1 for j in range(V)])
+            if V == 1:
+                solver.add_clause(xs)
+                total += 1
+                continue
+            rs = list(range(next_var, next_var + V - 1))
+            next_var += V - 1
+            clauses = [[-xs[i], rs[i]] for i in range(V - 1)]
+            clauses += [[-rs[i - 1], rs[i]] for i in range(1, V - 1)]
+            clauses += [[xs[i], rs[i - 1], -rs[i]] for i in range(1, V - 1)]
+            clauses += [[xs[0], -rs[0]], [rs[-1], xs[-1]]]
+            clauses += [[-xs[i], -rs[i - 1]] for i in range(1, V)]
+            solver.append_formula(clauses)
+            total += len(clauses)
+    return next_var, total
 
 
 class _CounterPool:
@@ -88,7 +114,7 @@ def _build_counter(pool, variables):
 def _build_scamo_blocks(pool, width):
     """Build SCL blocks using persistent prefix/suffix counter definitions.
 
-    The shared assignment constraints already enforce AMO over every
+    The NSC assignment constraints already enforce AMO over every
     vertex's labels, so internal and adjacent-block AMO clauses are redundant.
     Only the counters needed for the edge windows are constructed here.
     """
@@ -111,7 +137,7 @@ def _build_scamo_blocks(pool, width):
 
 
 def _window_registers(registers, start, width, block_width):
-    """Cover a window by at most three whole/prefix/suffix block registers."""
+    """Cover a window by whole/prefix/suffix block registers."""
     first_block, offset = divmod(start, block_width)
     last_block = (start + width - 1) // block_width
     if first_block == last_block:
@@ -129,25 +155,17 @@ def _window_registers(registers, start, width, block_width):
 
 
 def _new_window_pairs(pool, registers, width, block_width, last_k):
+    """Mirror glue_stair: one pair within a block, four across blocks.
+
+    Pairs are deduplicated within this threshold. Existing solver clauses
+    remain in place, so later thresholds may submit equivalent clauses again.
+    """
     pairs = set()
     for start in range(pool.V - width + 1):
         window = _window_registers(registers, start, width, block_width)
-        if width == last_k + 1:
-            # Only the first and last pieces can contain labels at the
-            # newly forbidden distance k-1. All other pairs were covered.
-            pairs.add((window[0], window[-1]))
-            pairs.add((window[-1], window[0]))
-            continue
         for left in window:
-            a, b = pool.intervals[left]
             for right in window:
-                c, d = pool.intervals[right]
-                largest_distance = max(b - 1 - c, d - 1 - a)
-                # If every label pair was forbidden at the previous k,
-                # the old edge constraints already imply this clause.
-                # This also works when the requested k skips thresholds.
-                if largest_distance >= last_k:
-                    pairs.add((left, right))
+                pairs.add((left, right))
     # Deterministic clause order helps make repeated benchmark runs comparable.
     return sorted(pairs)
 
@@ -155,8 +173,14 @@ def _new_window_pairs(pool, registers, width, block_width, last_k):
 def _add_distance_constraints(solver, edges, V, width, next_var, counter_cache=None):
     """Strengthen one solver monotonically; never remove old constraints.
 
-    A cache belongs to one graph and one solver. The interval register pool
-    survives every block change, including k=4, 8, 16, ... .
+    SCL partitions the label sequence into blocks of length k and joins
+    adjacent blocks using suffix/prefix counters. On an ABP edge we enforce
+    the corresponding two-vertex conflicts in both directions; each vertex's
+    internal AMO is already implied by its assignment constraints. Earlier
+    clauses and interval definitions remain in this solver as k increases.
+
+    This adapts the SCL block construction in Truong et al.'s implementation:
+    https://github.com/TruongXuanHieu-H/AntiBandwidthSCL/blob/main/src/ladder_encoder.cpp
     """
     if not 1 <= width <= V:
         raise ValueError("The threshold must be between 1 and V")
@@ -180,7 +204,7 @@ def _add_distance_constraints(solver, edges, V, width, next_var, counter_cache=N
         counter_cache["last_k"] = width
         return next_var, 0
 
-    block_width = 1 << (width.bit_length() - 1)
+    block_width = width
     if counter_cache.get("block_width") != block_width:
         counter_cache["blocks"] = _build_scamo_blocks(pool, block_width)
         counter_cache["block_width"] = block_width
@@ -252,14 +276,14 @@ def find_max_k(edges, V):
     encoding_time = 0.0
     solving_time = 0.0
     clauses = 0
-    next_var = V * V + 1
     counter_cache = {}
     start = perf_counter()
     print(f"ABP PHASE encoding {start}", flush=True)
     upper_bound = _upper_bound(edges, V)
     print(f"ABP UPPER_BOUND {upper_bound}", flush=True)
     with Solver(name="g3") as solver:
-        clauses += _add_assignment_constraints(solver, V)
+        next_var, assignment_clauses = _add_nsc_assignment_constraints(solver, V)
+        clauses += assignment_clauses
         encoding_time += perf_counter() - start
         print(f"ABP ENCODING_TIME {encoding_time}", flush=True)
         k = 1

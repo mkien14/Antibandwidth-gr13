@@ -1,0 +1,43 @@
+{
+  "source_location": "/kaggle/input/datasets/kiennguyen1403/abp-scamo-scl-nsc/abp_source",
+  "scamo_sha256": "f5f3f34a4bb335317e83645c54b8a9519b97492a681edeab61edb2baa1b028e9",
+  "cpu_model": "Intel(R) Xeon(R) CPU @ 2.20GHz",
+  "logical_cpus": 4,
+  "total_ram_gib": 31.35,
+  "available_ram_gib": 30.0,
+  "platform": "Linux-6.18.55+-x86_64-with-glibc2.39",
+  "python": "3.13.18",
+  "packages": {
+    "python-sat": "1.9.dev15",
+    "psutil": "7.2.2",
+    "ortools": "9.15.6755",
+    "protobuf": "6.33.6"
+  },
+  "instances": [
+    "494_bus.mtx.rnd",
+    "662_bus.mtx.rnd",
+    "685_bus.mtx.rnd",
+    "ash85.mtx.rnd",
+    "bcspwr01.mtx.rnd",
+    "bcspwr02.mtx.rnd",
+    "bcspwr03.mtx.rnd",
+    "bcsstk01.mtx.rnd",
+    "bcsstk06.mtx.rnd",
+    "bcsstk07.mtx.rnd",
+    "can__445.mtx.rnd",
+    "can__715.mtx.rnd",
+    "curtis54.mtx.rnd",
+    "dwt__234.mtx.rnd",
+    "dwt__503.mtx.rnd",
+    "dwt__592.mtx.rnd",
+    "ibm32.mtx.rnd",
+    "impcol_b.mtx.rnd",
+    "impcol_d.mtx.rnd",
+    "nos4.mtx.rnd",
+    "nos6.mtx.rnd",
+    "pores_1.mtx.rnd",
+    "sherman4.mtx.rnd",
+    "will57.mtx.rnd"
+  ],
+  "batch_index": 0
+}
